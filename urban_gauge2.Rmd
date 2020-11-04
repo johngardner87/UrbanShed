@@ -84,6 +84,42 @@ urban <- urban_areas(cb=T, class="sf")
 
 pop_urban<-read_csv("out/urban_areas_pop_2005_2018.csv")
 
+# manually check some names/GEOIDs that may have changed
+name_change <- pop_urban %>% 
+  group_by(GEOID) %>%
+  mutate(count = n()) %>%
+  filter(count <14) %>% 
+  arrange(NAME)
+
+#Avondale: if 04546 04549
+#Louisville: if 51715 then 51755
+#Prescott: 72046 then 72112
+#Vero:  IF 90406  then 80400
+#Honoloulou: If 39889, 89770
+#Murrieta: If 87004 then 60799 
+#Radcliff: if 73180 then 26750
+#Daytona: If 22636 then 67134 
+#LV: IF  47962 47995
+#Albany if 00928, convert to 00970
+
+# correct the GEOIDs that have changes. There may be more, but this is all I could find.
+pop_urban <- pop_urban %>%
+  mutate(GEOID_new = case_when(
+    GEOID ==  "04546" ~ "04549", 
+    GEOID ==  "51715" ~ "51755", 
+    GEOID ==  "72046" ~ "72112", 
+    GEOID ==  "90406" ~ "80400", 
+    GEOID ==  "39889" ~ "89770", 
+    GEOID ==  "87004" ~ "60799 ", 
+    GEOID ==  "73180" ~ "26750", 
+    GEOID ==  "22636" ~ "67134", 
+    GEOID ==  "47962" ~ "47995", 
+    GEOID ==  "00928" ~ "00970", 
+    TRUE ~ GEOID
+  )) %>%
+  arrange(NAME, year)
+
+
 # https://www.census.gov/programs-surveys/geography/guidance/geo-areas/urban-rural/2010-urban-rural.html
 ```
 
@@ -94,7 +130,7 @@ pop_urban<-read_csv("out/urban_areas_pop_2005_2018.csv")
 # calcualte annual rate of change of populations and median over time
 pop_urban_sum <- pop_urban %>%
   mutate(year = as.numeric(year)) %>%
-  group_by(GEOID) %>%
+  group_by(GEOID_new) %>%
   arrange(year) %>%
   mutate(mean_pop= mean(estimate, na.rm=T),
          lag_pop = lag(estimate),
@@ -102,11 +138,19 @@ pop_urban_sum <- pop_urban %>%
   mutate(mean_pct_change = mean(pct_change, na.rm=T),
          median_pct_change = median(pct_change, na.rm = T))  %>%
   ungroup() %>%
-  arrange(GEOID, year)
+  arrange(GEOID_new, year)
+
+pop_sum <- pop_urban_sum %>%
+   group_by(GEOID_new) %>%
+   summarise(mean_pop= mean(estimate, na.rm=T)) %>%
+   ungroup() %>%
+   left_join(pop_urban_sum %>%
+              distinct(GEOID_new, .keep_all=T) %>%
+              select(GEOID_new, NAME, mean_pct_change, median_pct_change, population))
 
 # filter to top 100 largest cities (mean pop 2005-2018)
 pop_plot <- pop_urban_sum %>%
-  group_by(GEOID) %>%
+  group_by(GEOID_new) %>%
   filter(year == max(year, na.rm = T)) %>%
   ungroup() %>%
   arrange(desc(mean_pop)) %>%
@@ -117,21 +161,23 @@ pop_plot <- pop_urban_sum %>%
       median_pct_change > 0 ~ "Increasing",
       median_pct_change == 0 ~ "No Change"))
 
-
 # plot all urban clusters, areas, and the largest 100
-mapview(urban %>% filter(!GEOID10 %in% pop_urban$GEOID), col.regions="yellow", alpha=0.5, layer.name="Urban Clusters (>2500 ppl)") +
+mapview(urban %>% filter(!GEOID10 %in% pop_urban$GEOID_new), col.regions="yellow", alpha=0.5, layer.name="Urban Clusters (>2500 ppl)") +
 mapview(urban %>%
-            filter(GEOID10 %in% unique(pop_urban$GEOID)), layer.name="Urban Areas (>65,000 ppl)", col.regions="orange", alpha=0.5) +
+            filter(GEOID10 %in% unique(pop_urban$GEOID_new)), layer.name="Urban Areas (>65,000 ppl)", col.regions="orange", alpha=0.5) +
 mapview(urban %>%
-          inner_join(pop_plot, by=c("GEOID10"="GEOID")),
+          inner_join(pop_plot, by=c("GEOID10"="GEOID_new")),
                      col.regions="red", layer.name="Top 100 largest urban areas", alpha=0.5) 
 
 
+write_csv(pop_sum, "out/urban_pop_sum.csv")
+write_csv(pop_urban_sum, "out/urban_pop_2005_2018.csv")
+
 ```
-# First lets look at how 8586 active (and recently active) USGS gages overlap with all 3601 urban clusters/areas. 
+# First lets look at how 9479 active (and recently active) USGS gages overlap with all 3601 urban clusters/areas. 
 
 # How many gages are WITHIN these "urban" boundaries (pop >2500) ?
-# 24% of gages are within urban areas, and 76% percent are in rural areas
+# 23% of gages are within urban areas, and 77% percent are in rural areas
 
 # To compare this with urban vs. rural population and area
 # 80.7 % of US population lives in urban areas, but urban area accounts for 2.9% of the total land area
@@ -142,17 +188,23 @@ mapview(urban %>%
 
 ```{r intersect_UC, echo=F}
 
-## load usgs gauges (8587
-gauge <- read_csv("in/All-USGS-v1.csv") %>%
+## load usgs gauges.
+gauge <- read_csv("in/usgs-current-gages.csv") %>%
   filter(!is.na(latitude) & !is.na(longitude)) %>%
-  st_as_sf(coords= c("longitude","latitude"), crs=4269)
+  st_as_sf(coords= c("longitude","latitude"), crs=4269) %>%
+  mutate(gagechar = as.character(str_pad(gagechar , 8, pad="0")))
  
 ### FIND gauges IN all urban boundaries. 
 UC_join <- gauge %>%
   st_transform(2163) %>%
   st_join(urban %>%
             st_transform(2163),
-          join=st_intersects)
+          join=st_intersects) %>%
+  mutate(urban_gauge = ifelse(is.na(GEOID10), "No","Yes"))  %>%
+  left_join(pop_sum, by=c("GEOID10"="GEOID_new")) %>%
+  st_transform(4326) %>%
+  dplyr::mutate(lat = sf::st_coordinates(.)[,1],
+                lon = sf::st_coordinates(.)[,2])
 
 ### interactive map of all gauges colored by city they are in
 mapview(UC_join, zcol="GEOID10", legend=F, layer.name= "Gages") +
@@ -161,11 +213,16 @@ mapview(UC_join, zcol="GEOID10", legend=F, layer.name= "Gages") +
 # estimate percent of all gauges in all urban areas/clusters
 knitr::kable(UC_join %>%
   st_set_geometry(NULL) %>%
-  mutate(urban_gauge = ifelse(is.na(GEOID10), "No","Yes")) %>%
   group_by(urban_gauge) %>%
   summarise(Count = n()) %>%
   mutate(Percent = Count/sum(Count)*100),
   digits=2, align="c", caption= "# gauges WITHIN urban areas/clusters >2,500 people")
+
+gage_sum <- UC_join %>%
+  group_by(GEOID10) %>%
+  summarise(n_gages = n(), 
+            site_years=sum(rec_length)) %>%
+  st_set_geometry(NULL)
 
 # estimate how many urban areas/clusters have gauges or not
 UC_no_gage <- urban %>%
@@ -176,7 +233,9 @@ UC_no_gage <- urban %>%
               distinct(GEOID10) %>%
               mutate(has_gauge ="YES"),
             by="GEOID10") %>%
-  mutate(has_gauge = ifelse(is.na(has_gauge), "NO", has_gauge))
+  mutate(has_gauge = ifelse(is.na(has_gauge), "NO", has_gauge)) %>%
+  left_join(pop_sum, by=c("GEOID10"="GEOID_new")) %>%
+  left_join(gage_sum, by="GEOID10")
 
 knitr::kable(UC_no_gage %>%
   group_by(has_gauge) %>%
@@ -189,6 +248,10 @@ knitr::kable(UC_no_gage %>%
 
 #(sum(urban$ALAND10)/1000000+ sum(urban$AWATER10)/1000000) / (8080464.3 + 1717856 + 28311)
 
+write_csv(UC_join, "D:/Dropbox/projects/UrbanShed/out/gauge_in_urban2500.csv")
+write_csv(UC_no_gage, "D:/Dropbox/projects/UrbanShed/out/urban2500_with_gauge.csv")
+
+
 ```
 
 # Does the number of gages scale with land area of cities?Probably Yes
@@ -198,23 +261,13 @@ knitr::kable(UC_no_gage %>%
 ```{r area_scaling, echo=F}
 
 #### of urban areas with gages, is the # of gages relates to land area
-p3 <- UC_join %>%
-  st_set_geometry(NULL) %>%
-  filter(!is.na(GEOID10)) %>%
- # mutate(urban_gage = ifelse(is.na(GEOID10), "No","Yes")) %>%
-  group_by(GEOID10) %>%
-  summarise(Count = n(), ALAND10=ALAND10[1], site_years=sum(rec_length)) %>%
-  mutate(Percent = Count/sum(Count)*100) %>%
-  inner_join(urban %>%
-                st_set_geometry(NULL) %>%
-                select(NAME10, GEOID10), by="GEOID10")%>%
-  arrange(desc(site_years)) %>%
 
-ggplot() +
-  geom_point(aes(x=ALAND10/1000000, y=Count, label=NAME10, color=log10(site_years))) +
+p3 <- ggplot(UC_no_gage) +
+  geom_point(aes(x=ALAND10/1000000, y=n_gages, label=NAME10, color=log10(site_years))) +
+ # geom_smooth(method="loess", aes(x=ALAND10/1000000, y=Count, label=NAME10), color="black", se=F) +
   scale_color_viridis_c()+
-  scale_x_log10() +
-  scale_y_log10() +
+#  scale_x_log10() +
+  # scale_y_log10() +
   theme_bw() +
   xlab("Size of urban area (km2)")+
   ylab("Number of gages")
@@ -255,12 +308,12 @@ ggplot()+
 
 # Next, lets focus on the 447 locations the census defines as "urban areas" i.e. with pop >65,000 (because we have easily accesible population data over time for these areas).
 
-# How many of the 8586 gages are WITHIN cities (pop >65,000) ?
-# 19% of gages are within these cities, and 81% are outside of these cities
+# How many of the 9479 gages are WITHIN cities (pop >65,000) ?
+# 18% of gages are within these cities, and 82% are outside of these cities
 
 
 # How many cities (pop > 65,000) have at least 1 gage?
-# 36% of cities do NOT have any USGS gages in the boundaries. 64% of citees have at least one gage (that was active in last ~7 years).
+# 34% of cities do NOT have any USGS gages in the boundaries. 66% of citees have at least one gage (that was active in last ~7 years).
 
 ```{r intersect_UA, echo=F}
 
@@ -269,25 +322,30 @@ ggplot()+
 UA_join <- gauge %>%
   st_transform(2163) %>%
   st_join(urban %>%
-            filter(GEOID10 %in% unique(pop_urban$GEOID)) %>%
+            filter(GEOID10 %in% unique(pop_urban$GEOID_new)) %>%
             st_transform(2163),
-          join=st_intersects)
+          join=st_intersects) %>%
+  mutate(urban_gauge = ifelse(is.na(GEOID10), "No","Yes")) %>%
+  left_join(pop_sum, by=c("GEOID10"="GEOID_new")) %>%
+  st_transform(4326) %>%
+  dplyr::mutate(lat = sf::st_coordinates(.)[,1],
+                lon = sf::st_coordinates(.)[,2])
+
 
 ### 447 areas
 urban %>%
   st_set_geometry(NULL) %>%
-  filter(GEOID10 %in% unique(pop_urban$GEOID)) %>%
+  filter(GEOID10 %in% unique(pop_urban$GEOID_new)) %>%
   summarise(n=length(unique(GEOID10)))
 
 ### interactive map of all gauges colored by city they are in
 mapview(UA_join, zcol="GEOID10", legend=F, layer.name= "Gauges") +
   mapview(urban %>%
-            filter(GEOID10 %in% unique(pop_urban$GEOID)), zcol="GEOID10", legend=F, layer.name="Urban Boundaries")
+            filter(GEOID10 %in% unique(pop_urban$GEOID_new)), zcol="GEOID10", legend=F, layer.name="Urban Boundaries")
 
 # estimate percent of all gauges in urban areas
 knitr::kable(UA_join %>%
   st_set_geometry(NULL) %>%
-  mutate(urban_gauge = ifelse(is.na(GEOID10), "No","Yes")) %>%
   group_by(urban_gauge) %>%
   summarise(Count = n()) %>%
   mutate(Percent = Count/sum(Count)*100),
@@ -295,7 +353,7 @@ knitr::kable(UA_join %>%
 
 # estimate how many cities have gauges or not
 UA_no_gage <- urban %>%
-  filter(GEOID10 %in% unique(pop_urban$GEOID)) %>%
+  filter(GEOID10 %in% unique(pop_urban$GEOID_new)) %>%
   st_set_geometry(NULL) %>%
   left_join(UA_join %>%
               st_set_geometry(NULL) %>%
@@ -303,13 +361,18 @@ UA_no_gage <- urban %>%
               distinct(GEOID10) %>%
               mutate(has_gage ="YES"),
             by="GEOID10") %>%
-  mutate(has_gage = ifelse(is.na(has_gage), "NO", has_gage))
-
+  mutate(has_gage = ifelse(is.na(has_gage), "NO", has_gage)) %>%
+  left_join(pop_sum, by=c("GEOID10"="GEOID_new")) %>%
+  left_join(gage_sum, by="GEOID10")
+  
 knitr::kable(UA_no_gage %>%
   group_by(has_gage) %>%
   summarise(Count=n()) %>%
   mutate(Percent = Count/sum(Count)*100),
   digits=2, align="c", caption="# cities with gauges")
+
+write_csv(UA_join, "out/gauge_in_urban65000.csv")
+write_csv(UA_no_gage, "out/urban65000_with_gauge.csv")
 
 ```
 
@@ -317,27 +380,15 @@ knitr::kable(UA_no_gage %>%
 # Hover over the scattplot to know which cities plot where. Looks like three outliers with high population but few gages (Miami, Phoenix, LA). These are weird places (have fewer rivers and probably water districts/state that collect that data)
 
 ```{r pop_scaling, echo=F}
+
 # pop_mean <- pop_urban %>%
-#   group_by(GEOID) %>%
-#   summarise(mean_pop= mean(estimate, na.rm=T)) %>%
-#   ungroup()
+#    group_by(GEOID_new) %>%
+#    summarise(mean_pop= mean(estimate, na.rm=T)) %>%
+#    ungroup()
 
-p1 <-UA_join %>%
-  st_set_geometry(NULL) %>%
-  filter(!is.na(GEOID10)) %>%
- # mutate(urban_gage = ifelse(is.na(GEOID10), "No","Yes")) %>%
-  group_by(GEOID10) %>%
-  summarise(Count = n(), 
-            ALAND10=ALAND10[1], 
-            site_years=sum(rec_length)) %>%
- inner_join(pop_mean, by=c('GEOID10'='GEOID')) %>%
-  inner_join( urban %>%
-                st_set_geometry(NULL) %>%
-                select(NAME10, GEOID10), by="GEOID10")%>%
-
-ggplot(aes(x=mean_pop, y=Count, color=log10(ALAND10/1000000),
-             label=NAME10)) +
-  geom_point() +
+p1 <- ggplot(UA_no_gage) +
+  geom_point(aes(x=mean_pop, y=n_gages, label=NAME10, color=log10(ALAND10/1000000))) +
+ # geom_smooth(method="loess", aes(x=ALAND10/1000000, y=Count, label=NAME10), color="black", se=F) +
   scale_color_viridis_c()+
   scale_x_log10() +
   scale_y_log10() +
@@ -345,13 +396,12 @@ ggplot(aes(x=mean_pop, y=Count, color=log10(ALAND10/1000000),
   xlab("Mean population")+
   ylab("Number of gages")+
   labs(color="Log10(Area)") 
- # geom_text(aes(label=NAME10),hjust=0, vjust=0, color="grey", alpha=0.5)
 
 ggplotly(p1)
 
 ###
 urban %>%
-  filter(GEOID10 %in% unique(pop_urban$GEOID)) %>%
+  filter(GEOID10 %in% unique(pop_urban$GEOID_new)) %>%
   st_set_geometry(NULL) %>%
   left_join(UA_join %>%
               st_set_geometry(NULL) %>%
@@ -363,7 +413,7 @@ urban %>%
   group_by(GEOID10) %>%
   summarise(gage_count = sum(has_gauge=="YES"), 
             ALAND10=ALAND10[1], site_years=sum(rec_length)) %>%
-  left_join(pop_mean, by=c('GEOID10'='GEOID')) %>%
+  left_join(pop_mean, by=c('GEOID10'='GEOID_new')) %>%
   mutate(num_gages = case_when(
     is.na(gage_count)|gage_count==0 ~ "0",
     gage_count ==1 ~ "1",
@@ -388,61 +438,27 @@ ggplot()+
 # %20 of cities have ~decreasing pop, 80% of cities have ~increasing pop. The relationshop between number of gages and city population is the same in cities with increasing and decreasing populations.
 ```{r city_pop, echo=F}
  
-# make figs map pop increasing or decreasing
-
-pop_urban_sum <- pop_urban %>%
-  mutate(year = as.numeric(year)) %>%
-  group_by(GEOID) %>%
-  arrange(year) %>%
-  mutate(mean_pop= mean(estimate, na.rm=T),
-         lag_pop = lag(estimate),
-         pct_change = ((estimate-lag_pop)/lag_pop) *100) %>%
-  mutate(mean_pct_change = mean(pct_change, na.rm=T),
-         median_pct_change = median(pct_change, na.rm = T))  %>%
-  ungroup() %>%
-  arrange(GEOID, year)
-
 pop_plot <- pop_urban_sum %>%
-  group_by(GEOID) %>%
+  group_by(GEOID_new) %>%
   filter(year == max(year, na.rm = T)) %>%
   ungroup() %>%
-  arrange(desc(mean_pop)) %>%
-  #slice(1:100) %>%
-  mutate(
-    population = case_when(
-      median_pct_change < 0 ~ "Decreasing",
-      median_pct_change > 0 ~ "Increasing",
-      median_pct_change == 0 ~ "No Change"))
+  arrange(desc(mean_pop))
 
 ## 20/80% decreasing/increasing pop
-# pop_plot %>%
-#   group_by(population) %>%
-#   summarise(n=n())
+pop_plot %>%
+   group_by(population) %>%
+   summarise(n=n()) %>%
+   mutate(perc = n/sum(n))
 
 # make map of increasiong/decreasing city pop
 mapview(urban %>%
-          inner_join(pop_plot, by=c("GEOID10"="GEOID")),
+          inner_join(pop_plot, by=c("GEOID10"="GEOID_new")),
                      zcol="population", layer.name="Median % pop change", alpha=0.5)  
   
-
-###
-p2 <- UA_join %>%
-  st_set_geometry(NULL) %>%
-  filter(!is.na(GEOID10)) %>%
- # mutate(urban_gage = ifelse(is.na(GEOID10), "No","Yes")) %>%
-  group_by(GEOID10) %>%
-  summarise(Count = n(), 
-            ALAND10=ALAND10[1], 
-            site_years=sum(rec_length)) %>%
- inner_join(pop_plot, by=c('GEOID10'='GEOID')) %>%
- inner_join(urban %>%
-                st_set_geometry(NULL) %>%
-                select(NAME10, GEOID10), by="GEOID10")%>%
-  filter(!is.na(population)) %>%
-
-ggplot(aes(x=mean_pop, y=Count, color=population,
-             label=NAME10)) +
-  geom_point( alpha=0.4) +
+##
+p2 <- ggplot(UA_no_gage) +
+  geom_point(aes(x=mean_pop, y=n_gages, color=population,
+             label=NAME10), alpha=0.7) +
   scale_color_viridis_d()+
   scale_x_log10() +
   scale_y_log10() +
@@ -452,7 +468,6 @@ ggplot(aes(x=mean_pop, y=Count, color=population,
 
 ggplotly(p2)
 
-
 #  mapview(gauge_urban_join %>%
 #            filter(GEOID10 %in% pop_plot$GEOID), col="black", #col.regions="black", alpha=0.5, cex=0.7, layer.name="Urban Gauges")
 
@@ -460,46 +475,42 @@ ggplotly(p2)
 
 # Now lets focus on the top 100 largest cities.
 
-# 93 of largest cities have at least 1 gage, 7 have no gages.
+# 94 of largest cities have at least 1 gage, 6 have no gages.
+# 13% of all gauges are located in 100 largest cities
 ```{r top_100, echo=F}
 
 pop_100 <- pop_urban_sum %>%
-  group_by(GEOID) %>%
+  #filter(!GEOID %in% c(47962,51715, 39889, 00928)) %>%
+  group_by(GEOID_new) %>%
   filter(year == max(year, na.rm = T)) %>%
   ungroup() %>%
   arrange(desc(mean_pop)) %>%
-  slice(1:100) %>%
-  mutate(
-    population = case_when(
-      median_pct_change < 0 ~ "Decreasing",
-      median_pct_change > 0 ~ "Increasing",
-      median_pct_change == 0 ~ "No Change"))
+  slice(1:100) 
+
 
 ### FIND gauges IN urban boundaries. 
 # filter urban areas to ones with pop data first.
 top100_join <- gauge %>%
   st_transform(2163) %>%
   st_join(urban %>%
-            filter(GEOID10 %in% unique(pop_100$GEOID)) %>%
+            filter(GEOID10 %in% unique(pop_100$GEOID_new)) %>%
             st_transform(2163),
-          join=st_intersects)
-
-### 96 areas
-# urban %>%
-#   st_set_geometry(NULL) %>%
-#   filter(GEOID10 %in% pop_100$GEOID) %>%
-#   summarise(n=length(unique(GEOID10)))
+          join=st_intersects) %>%
+  mutate(urban_gauge = ifelse(is.na(GEOID10), "No","Yes")) %>%
+  left_join(pop_sum, by=c("GEOID10"="GEOID_new")) %>%
+  st_transform(4326) %>%
+  dplyr::mutate(lat = sf::st_coordinates(.)[,1],
+                lon = sf::st_coordinates(.)[,2])
 
 ### interactive map of all gauges colored by city they are in
 mapview(top100_join, zcol="GEOID10", legend=F, layer.name= "Gages") +
   mapview(urban %>%
-            filter(GEOID10 %in% unique(pop_100$GEOID)), zcol="GEOID10", legend=F, layer.name="Top 100 largest cities")
+            filter(GEOID10 %in% unique(pop_100$GEOID_new)), zcol="GEOID10", legend=F, layer.name="Top 100 largest cities")
 
 
 # estimate percent of all gauges in urban areas
 knitr::kable(top100_join %>%
   st_set_geometry(NULL) %>%
-  mutate(urban_gauge = ifelse(is.na(GEOID10), "No","Yes")) %>%
   group_by(urban_gauge) %>%
   summarise(Count = n()) %>%
   mutate(Percent = Count/sum(Count)*100),
@@ -508,7 +519,7 @@ knitr::kable(top100_join %>%
 
 # estimate how many cities have gauges or not
 top_no_gage <- urban %>%
-  filter(GEOID10 %in% unique(pop_100$GEOID)) %>%
+  filter(GEOID10 %in% unique(pop_100$GEOID_new)) %>%
   st_set_geometry(NULL) %>%
   left_join(top100_join %>%
               st_set_geometry(NULL) %>%
@@ -516,7 +527,10 @@ top_no_gage <- urban %>%
               distinct(GEOID10) %>%
               mutate(has_gage ="YES"),
             by="GEOID10") %>%
-  mutate(has_gage = ifelse(is.na(has_gage), "NO", has_gage))
+  mutate(has_gage = ifelse(is.na(has_gage), "NO", has_gage)) %>%
+  left_join(pop_sum, by=c("GEOID10"="GEOID_new")) %>%
+  left_join(gage_sum, by="GEOID10")
+  
 
 knitr::kable(top_no_gage %>%
   group_by(has_gage) %>%
@@ -531,82 +545,8 @@ knitr::kable(top_no_gage %>%
 
 
 
-```
-
-
-
-
-
-
-```{r buffer, include=F, echo=F}
-
-### FIND gauges IN 1 km BUFFER boundaries. 
-
-# # filter urban areas to ones with pop data first.
-# gauge_urban_join <- gauge %>%
-#   st_transform(2163) %>%
-#   st_join(urban %>%
-#             filter(GEOID10 %in% unique(pop_urban$GEOID)) %>%
-#             st_transform(2163),
-#           join=st_intersects)
-# 
-# ### interactive map of all gauges colored by city they are in
-# mapview(gauge_urban_join, zcol="GEOID10", legend=F) +
-#   mapview(urban %>%
-#             filter(GEOID10 %in% unique(pop_urban$GEOID)), zcol="GEOID10", legend=F)
-# 
-# # estimate percent of all gauges in urban areas
-# knitr::kable(gauge_urban_join %>%
-#   st_set_geometry(NULL) %>%
-#   mutate(urban_gauge = ifelse(is.na(GEOID10), "No","Yes")) %>%
-#   group_by(urban_gauge) %>%
-#   summarise(Count = n()) %>%
-#   mutate(Percent = Count/sum(Count)*100),
-#   digits=2, align="c", caption= "# gauges IN cities >65,000 people" )
-# 
-# 
-# cities_wo_gauge <- urban %>%
-#   filter(GEOID10 %in% unique(pop_urban$GEOID)) %>%
-#   st_set_geometry(NULL) %>%
-#   left_join(gauge_urban_join %>%
-#               st_set_geometry(NULL) %>%
-#               select(GEOID10) %>%
-#               distinct(GEOID10) %>%
-#               mutate(has_gauge ="YES"),
-#             by="GEOID10") %>%
-#   mutate(has_gauge = ifelse(is.na(has_gauge), "NO", has_gauge))
-# 
-# 
-# knitr::kable(cities_wo_gauge %>%
-#   group_by(has_gauge) %>%
-#   summarise(Count=n()) %>%
-#   mutate(Percent = Count/sum(Count)*100),
-#   digits=2, align="c", caption="# cities with gauges")
-# 
-# 
-# write_csv(pop_urban, "out/urban_areas_pop_2005_2018.csv")
-# 
-# st_write(urban, "out/urban_areas_boundaries.shp")
-# 
-# write_csv(gauge_urban_join %>%
-#             filter(!is.na(GEOID10)), "out/gauges_IN_cities.csv")
-
-
-
-```
-
-
-
-
-```{r save, include=F, echo=F}
-
-
-#write_csv(pop_urban, "out/urban_areas_pop_2005_2018.csv")
-
-#st_write(urban, "out/urban_areas_boundaries.shp")
-
-#write_csv(gauge_urban_join %>%
-#            filter(!is.na(GEOID10)), "out/gauges_IN_cities.csv")
+write_csv(top100_join, "out/gauge_in_urban_top100.csv")
+write_csv(top_no_gage, "out/urban_with_gauge_top100.csv")
 
 
 ```
