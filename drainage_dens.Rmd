@@ -1,0 +1,92 @@
+---
+title: "drainage_density"
+author: "John Gardner"
+date: "October 29, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(stringr)
+library(tidyverse)
+library(feather)
+library(sf)
+library(rgdal)
+library(maps)
+library(magrittr)
+library(data.table)
+library(tmap)
+library(readr)
+library(lubridate)
+#library(raster)
+library(mapview)
+library(ggthemes)
+library(vroom) 
+library(leaflet)
+library(tidyr)
+library(leafpop)
+library(USAboundaries)
+library(knitr)
+library(nhdplusTools)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load}
+
+### function to download nhdplusv2
+# download_nhdplusv2(
+# outdir,
+# url = paste0("https://s3.amazonaws.com/edap-nhdplus/NHDPlusV21/",
+# "Data/NationalData/NHDPlusV21_NationalData_Seamless", "_Geodatabase_Lower48_07.7z")
+# )
+
+nhdplusTools::nhdplus_path("D:/projects/TSS/data/NHDPlusNationalData/NHDPlusV21_National_Seamless_Flattened_Lower48.gdb")
+
+nhd_paths <- nhdplusTools::stage_national_data(output_path = 'D:/projects/TSS/data/NHDPlusNationalData')
+
+nhd <- readRDS(nhd_paths$flowline) %>%
+   filter(!FTYPE %in% c("Pipeline", "Coastline")) 
+ 
+```
+
+
+```{r clip, echo=FALSE}
+# transform crs
+urban_sf <- urban %>%
+  st_transform(st_crs(nhd))
+
+#clip and join nhd to urban boundaries
+nhd_urban <- nhd %>%
+  mutate(flow_type = ifelse(FCODE %in% c(46003, 46007), "intermittent", "perennial")) %>%
+  st_join(urban_sf, join=st_intersects, left=F)
+
+# summarise nhd by urban area
+nhd_sum <- nhd_urban %>%
+  st_set_geometry(NULL) %>%
+  group_by(GEOID10) %>%
+  summarise(UACE10= UACE10[1],
+            NAME10 = NAME10[1],
+            LSAD10 = LSAD10[1],
+            UATYP10 = UATYP10[1],
+            ALAND10 = ALAND10[1],
+            ALAND10_km2 = ALAND10/1000000,
+            AWATER10 =AWATER10[1],
+            length = sum(LENGTHKM),
+            length_inter=  sum(LENGTHKM[flow_type=="intermittent" ]),
+            density_km_km2 =length / ALAND10_km2,
+            median_QE_ME = median(QE_MA, na.rm=T),
+            median_drain_area = median(TotDASqKM, na.rm = T),
+            median_elevation = median(MINELEVSMO/100, na.rm=T)
+            )
+
+
+#st_write(nhd_urban, "D:/Dropbox/projects/UrbanShed/out/nhd_urban_clip.shp")
+#st_write(nhd_urban, "D:/Dropbox/projects/UrbanShed/out/nhd_urban_clip.gpkg")
+
+write_csv(nhd_sum, "D:/Dropbox/projects/UrbanShed/out/nhd_urban_summary.csv")
+
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

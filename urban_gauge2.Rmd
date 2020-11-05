@@ -138,7 +138,13 @@ pop_urban_sum <- pop_urban %>%
   mutate(mean_pct_change = mean(pct_change, na.rm=T),
          median_pct_change = median(pct_change, na.rm = T))  %>%
   ungroup() %>%
-  arrange(GEOID_new, year)
+  arrange(GEOID_new, year) %>%
+  mutate(
+    population = case_when(
+      median_pct_change < 0 ~ "Decreasing",
+      median_pct_change > 0 ~ "Increasing",
+      median_pct_change == 0 ~ "No Change"))
+
 
 pop_sum <- pop_urban_sum %>%
    group_by(GEOID_new) %>%
@@ -146,7 +152,7 @@ pop_sum <- pop_urban_sum %>%
    ungroup() %>%
    left_join(pop_urban_sum %>%
               distinct(GEOID_new, .keep_all=T) %>%
-              select(GEOID_new, NAME, mean_pct_change, median_pct_change, population))
+              select(GEOID_new, NAME, mean_pct_change, median_pct_change, population)) 
 
 # filter to top 100 largest cities (mean pop 2005-2018)
 pop_plot <- pop_urban_sum %>%
@@ -154,12 +160,7 @@ pop_plot <- pop_urban_sum %>%
   filter(year == max(year, na.rm = T)) %>%
   ungroup() %>%
   arrange(desc(mean_pop)) %>%
-  slice(1:100) %>%
-  mutate(
-    population = case_when(
-      median_pct_change < 0 ~ "Decreasing",
-      median_pct_change > 0 ~ "Increasing",
-      median_pct_change == 0 ~ "No Change"))
+  slice(1:100) 
 
 # plot all urban clusters, areas, and the largest 100
 mapview(urban %>% filter(!GEOID10 %in% pop_urban$GEOID_new), col.regions="yellow", alpha=0.5, layer.name="Urban Clusters (>2500 ppl)") +
@@ -170,8 +171,8 @@ mapview(urban %>%
                      col.regions="red", layer.name="Top 100 largest urban areas", alpha=0.5) 
 
 
-write_csv(pop_sum, "out/urban_pop_sum.csv")
-write_csv(pop_urban_sum, "out/urban_pop_2005_2018.csv")
+#write_csv(pop_sum, "out/urban_pop_sum.csv")
+#write_csv(pop_urban_sum, "out/urban_pop_2005_2018.csv")
 
 ```
 # First lets look at how 9479 active (and recently active) USGS gages overlap with all 3601 urban clusters/areas. 
@@ -248,8 +249,8 @@ knitr::kable(UC_no_gage %>%
 
 #(sum(urban$ALAND10)/1000000+ sum(urban$AWATER10)/1000000) / (8080464.3 + 1717856 + 28311)
 
-write_csv(UC_join, "D:/Dropbox/projects/UrbanShed/out/gauge_in_urban2500.csv")
-write_csv(UC_no_gage, "D:/Dropbox/projects/UrbanShed/out/urban2500_with_gauge.csv")
+#write_csv(UC_join, "D:/Dropbox/projects/UrbanShed/out/gauge_in_urban2500.csv")
+#write_csv(UC_no_gage, "D:/Dropbox/projects/UrbanShed/out/urban2500_with_gauge.csv")
 
 
 ```
@@ -266,7 +267,7 @@ p3 <- ggplot(UC_no_gage) +
   geom_point(aes(x=ALAND10/1000000, y=n_gages, label=NAME10, color=log10(site_years))) +
  # geom_smooth(method="loess", aes(x=ALAND10/1000000, y=Count, label=NAME10), color="black", se=F) +
   scale_color_viridis_c()+
-#  scale_x_log10() +
+  scale_x_log10() +
   # scale_y_log10() +
   theme_bw() +
   xlab("Size of urban area (km2)")+
@@ -371,8 +372,8 @@ knitr::kable(UA_no_gage %>%
   mutate(Percent = Count/sum(Count)*100),
   digits=2, align="c", caption="# cities with gauges")
 
-write_csv(UA_join, "out/gauge_in_urban65000.csv")
-write_csv(UA_no_gage, "out/urban65000_with_gauge.csv")
+#write_csv(UA_join, "out/gauge_in_urban65000.csv")
+#write_csv(UA_no_gage, "out/urban65000_with_gauge.csv")
 
 ```
 
@@ -413,7 +414,7 @@ urban %>%
   group_by(GEOID10) %>%
   summarise(gage_count = sum(has_gauge=="YES"), 
             ALAND10=ALAND10[1], site_years=sum(rec_length)) %>%
-  left_join(pop_mean, by=c('GEOID10'='GEOID_new')) %>%
+  left_join(pop_sum, by=c('GEOID10'='GEOID_new')) %>%
   mutate(num_gages = case_when(
     is.na(gage_count)|gage_count==0 ~ "0",
     gage_count ==1 ~ "1",
@@ -545,8 +546,36 @@ knitr::kable(top_no_gage %>%
 
 
 
-write_csv(top100_join, "out/gauge_in_urban_top100.csv")
-write_csv(top_no_gage, "out/urban_with_gauge_top100.csv")
+#write_csv(top100_join, "out/gauge_in_urban_top100.csv")
+#write_csv(top_no_gage, "out/urban_with_gauge_top100.csv")
+
+
+```
+
+```{r}
+# read in nhd summaries from within city boundaries
+
+nhd_sum<- read_csv("D:/Dropbox/projects/UrbanShed/out/nhd_urban_summary.csv")
+
+UC_nhd <- UC_no_gage %>%
+  inner_join(nhd_sum, by="GEOID10") %>%
+  mutate(gage_per_km = n_gages/length)
+
+ggplot(UC_nhd) +
+  geom_point(aes(x=mean_pop, y=gage_per_km, color=log10(density_km_km2)))+
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_viridis_c() +
+  theme_bw()
+
+
+ggplot(UC_nhd) +
+  geom_point(aes(x=density_km_km2, y=n_gages, color=log10(mean_pop)))+
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_viridis_c() +
+  theme_bw()
+
 
 
 ```
